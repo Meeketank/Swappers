@@ -1,12 +1,22 @@
 "use client";
 
 import { useState, useEffect, useRef } from 'react';
-import { auth } from '@/lib/firebase';
 import { useRouter } from 'next/navigation';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
+import { auth, db } from '@/lib/firebase';
+import { deleteUser, signOut } from 'firebase/auth';
 import DashboardHeader from '@/app/components/DashboardHeader';
-// import DashboardHeader from '../components/DashboardHeader';
+import { ToastContainer, toast } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+
+// List of spam words/phrases to detect
+const SPAM_WORDS = [
+  'spamword1', 'spamword2', 'spamphrase', 'badword', 
+  'advertisement', 'promote', 'buy now', 'click here',
+  'make money', 'earn cash', 'work from home',
+  'love', 'you', 'babe', 'date', 'sexy', 'hot',
+  'LOL', 'haha', 'omg', 'wtf', 'damn', 'shit'
+];
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -19,13 +29,76 @@ export default function ProfilePage() {
     lastName: '',
     location: '',
     availability: 'weekends',
-    profileType: 'public',
+    profileType: 'private',
+    email: '',
+    rating: 0,
     skillsOffered: [] as string[],
     skillsWanted: [] as string[],
     profilePic: '',
   });
   const [tempSkillOffered, setTempSkillOffered] = useState('');
   const [tempSkillWanted, setTempSkillWanted] = useState('');
+
+  // Check for spam content
+  const containsSpam = (text: string) => {
+    const lowerText = text.toLowerCase();
+    return SPAM_WORDS.some(word => lowerText.includes(word.toLowerCase()));
+  };
+
+  // Delete account completely (auth + firestore)
+  const deleteAccountCompletely = async () => {
+    try {
+      if (!auth.currentUser) return;
+
+      const userId = auth.currentUser.uid;
+      
+      // Try to delete auth user first
+      try {
+        await deleteUser(auth.currentUser);
+      } catch (authError: any) {
+        if (authError.code === 'auth/requires-recent-login') {
+          // If requires recent login, sign out and mark for deletion
+          await signOut(auth);
+          await setDoc(doc(db, "pending_deletions", userId), {
+            userId,
+            reason: 'spam content detected',
+            timestamp: new Date()
+          });
+          throw new Error('Account deletion requires recent login. Please sign in again to complete deletion.');
+        }
+        throw authError;
+      }
+
+      // Delete Firestore data
+      await deleteDoc(doc(db, "users", userId));
+
+      // Redirect to home page first
+      router.push('/');
+
+      // Then show toast after a small delay
+      setTimeout(() => {
+        toast.error('YOUR ACCOUNT HAS BEEN DELETED DUE TO SPAM CONTENT', {
+          position: "top-center",
+          autoClose: 20000,
+          hideProgressBar: false,
+          closeOnClick: true,
+          pauseOnHover: true,
+          draggable: true,
+          progress: undefined,
+        });
+      }, 500);
+
+    } catch (err: any) {
+      console.error("Account deletion error:", err);
+      router.push('/');
+      setTimeout(() => {
+        toast.error(err.message || 'Error during account deletion', {
+          position: "top-center",
+          autoClose: 10000,
+        });
+      }, 500);
+    }
+  };
 
   // Network status detection
   useEffect(() => {
@@ -77,30 +150,50 @@ export default function ProfilePage() {
         }
 
         const docRef = doc(db, "users", auth.currentUser.uid);
-        const docSnap = await getDoc(docRef);
+      const docSnap = await getDoc(docRef);
 
-        if (docSnap.exists()) {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        // Check if account is restricted
+        if (data.status === 'restricted') {
+          await signOut(auth);
+          router.push('/');
+          setTimeout(() => {
+            toast.error('Your account has been restricted. Please contact support.', {
+              position: "top-center",
+              autoClose: false,
+            });
+          }, 500);
+          return;
+        }
+
+
           setProfile({
-            firstName: docSnap.data().firstName || '',
-            lastName: docSnap.data().lastName || '',
-            location: docSnap.data().location || '',
-            availability: docSnap.data().availability || 'weekends',
-            profileType: docSnap.data().profileType || 'public',
-            skillsOffered: docSnap.data().skillsOffered || [],
-            skillsWanted: docSnap.data().skillsWanted || [],
-            profilePic: docSnap.data().profilePic || '',
+            firstName: data.firstName || '',
+            lastName: data.lastName || '',
+            email: auth.currentUser?.email || '',
+            rating: data.rating || 0,
+            location: data.location || '',
+            availability: data.availability || 'weekends',
+            profileType: data.profileType || 'private',
+            skillsOffered: data.skillsOffered || [],
+            skillsWanted: data.skillsWanted || [],
+            profilePic: data.profilePic || '',
           });
         } else {
           await setDoc(docRef, {
             firstName: '',
             lastName: '',
+            email: auth.currentUser?.email || '',
+            rating: 0,
             location: '',
             availability: 'weekends',
-            profileType: 'public',
+            profileType: 'private',
             skillsOffered: [],
             skillsWanted: [],
             profilePic: '',
             createdAt: new Date(),
+            updatedAt: new Date(),
           });
         }
       } catch (err: any) {
@@ -121,15 +214,47 @@ export default function ProfilePage() {
         return;
       }
 
+      // Check for spam in all text fields
+      const fieldsToCheck = [
+        profile.firstName,
+        profile.lastName,
+        profile.location,
+        ...profile.skillsOffered,
+        ...profile.skillsWanted
+      ];
+
+      const hasSpam = fieldsToCheck.some(field => containsSpam(field));
+
+      if (hasSpam) {
+        await deleteAccountCompletely();
+        return;
+      }
+
       await setDoc(doc(db, "users", auth.currentUser.uid), {
         ...profile,
         updatedAt: new Date(),
       }, { merge: true });
 
-      alert('Profile saved successfully!');
+      toast.success('Profile saved successfully!', {
+        position: "top-center",
+        autoClose: 3000,
+        hideProgressBar: false,
+        closeOnClick: true,
+        pauseOnHover: true,
+        draggable: true,
+        progress: undefined,
+      });
       setError('');
     } catch (err: any) {
-      setError(`Error saving profile: ${err.message}`);
+      toast.error(`Error saving profile: ${err.message}`, {
+        position: "top-center",
+        autoClose: 5000,
+        hideProgressBar: false,
+        closeOnClick: true,
+        pauseOnHover: true,
+        draggable: true,
+        progress: undefined,
+      });
       console.error("Profile save error:", err);
     }
   };
@@ -137,6 +262,15 @@ export default function ProfilePage() {
   const addSkill = (type: 'offered' | 'wanted') => {
     const skill = type === 'offered' ? tempSkillOffered : tempSkillWanted;
     if (skill.trim()) {
+      // Check for spam in the skill
+      if (containsSpam(skill)) {
+        toast.warning('This skill contains restricted content. Please use different words.', {
+          position: "top-center",
+          autoClose: 5000,
+        });
+        return;
+      }
+
       const key = type === 'offered' ? 'skillsOffered' : 'skillsWanted';
       if (!profile[key].includes(skill)) {
         setProfile({
@@ -170,6 +304,18 @@ export default function ProfilePage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-100">
+      <ToastContainer
+        position="top-center"
+        autoClose={5000}
+        hideProgressBar={false}
+        newestOnTop={false}
+        closeOnClick
+        rtl={false}
+        pauseOnFocusLoss
+        draggable
+        pauseOnHover
+      />
+      
       <DashboardHeader profilePic={profile.profilePic} />
 
       {/* Offline/Error Notifications */}
@@ -253,35 +399,63 @@ export default function ProfilePage() {
           </div>
 
           {/* Personal Information */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">First Name</label>
-              <input
-                type="text"
-                value={profile.firstName}
-                onChange={(e) => setProfile({...profile, firstName: e.target.value})}
-                className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all text-gray-900"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Last Name</label>
-              <input
-                type="text"
-                value={profile.lastName}
-                onChange={(e) => setProfile({...profile, lastName: e.target.value})}
-                className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all text-gray-900"
-              />
-            </div>
-            <div className="md:col-span-2">
-              <label className="block text-sm font-medium text-gray-700 mb-2">Location</label>
-              <input
-                type="text"
-                value={profile.location}
-                onChange={(e) => setProfile({...profile, location: e.target.value})}
-                className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all text-gray-900"
-              />
-            </div>
-          </div>
+          {/* Personal Information */}
+<div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+  <div>
+    <label className="block text-sm font-medium text-gray-700 mb-2">First Name</label>
+    <input
+      type="text"
+      value={profile.firstName}
+      onChange={(e) => setProfile({...profile, firstName: e.target.value})}
+      className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all text-gray-900"
+    />
+  </div>
+  <div>
+    <label className="block text-sm font-medium text-gray-700 mb-2">Last Name</label>
+    <input
+      type="text"
+      value={profile.lastName}
+      onChange={(e) => setProfile({...profile, lastName: e.target.value})}
+      className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all text-gray-900"
+    />
+  </div>
+  <div>
+    <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
+    <input
+      type="email"
+      value={profile.email}
+      disabled
+      className="w-full border border-gray-300 rounded-lg p-3 bg-gray-100 cursor-not-allowed text-gray-900"
+    />
+  </div>
+  <div>
+    <label className="block text-sm font-medium text-gray-700 mb-2">Your Rating</label>
+    <div className="flex items-center">
+      <div className="flex">
+        {[1, 2, 3, 4, 5].map((star) => (
+          <svg
+            key={star}
+            className={`h-6 w-6 ${star <= Math.round(profile.rating) ? 'text-yellow-400' : 'text-gray-300'}`}
+            fill="currentColor"
+            viewBox="0 0 20 20"
+          >
+            <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+          </svg>
+        ))}
+      </div>
+      <span className="ml-2 text-gray-600">{profile.rating.toFixed(1)}</span>
+    </div>
+  </div>
+  <div className="md:col-span-2">
+    <label className="block text-sm font-medium text-gray-700 mb-2">Location</label>
+    <input
+      type="text"
+      value={profile.location}
+      onChange={(e) => setProfile({...profile, location: e.target.value})}
+      className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all text-gray-900"
+    />
+  </div>
+</div>
 
           {/* Availability */}
           <div className="mb-8">
@@ -318,6 +492,11 @@ export default function ProfilePage() {
                     <span className="block text-xs text-gray-500 mt-1">
                       {option === 'public' ? 'Visible to all users' : 'Only visible to your connections'}
                     </span>
+                    {option === 'private' && profile.profileType === 'private' && (
+                      <span className="block text-xs text-blue-500 mt-1">
+                        You need to make your account public so that people can view it
+                      </span>
+                    )}
                   </div>
                 </label>
               ))}
@@ -400,7 +579,7 @@ export default function ProfilePage() {
           <div className="flex justify-end gap-4 mt-8 pt-6 border-t border-gray-200">
             <button
               onClick={() => router.push('/dashboard')}
-              className="px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors shadow-sm"
+              className="px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors shadow-sm text-gray-900"
             >
               Cancel
             </button>
@@ -415,5 +594,4 @@ export default function ProfilePage() {
       </div>
     </div>
   );
-
 }

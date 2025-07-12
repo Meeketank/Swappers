@@ -1,30 +1,32 @@
 "use client";
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { auth } from '@/lib/firebase';
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
 import { useRouter } from 'next/navigation';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { toast, ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 
 export default function AuthPage() {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
-  const [error, setError] = useState('');
   const [forgotPassword, setForgotPassword] = useState(false);
   const [resetEmailSent, setResetEmailSent] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setIsSubmitting(true);
 
     try {
       if (isLogin) {
         await signInWithEmailAndPassword(auth, email, password);
+        toast.success('Logged in successfully!');
         router.push('/dashboard');
       } else {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
@@ -35,35 +37,94 @@ export default function AuthPage() {
           profilePic: '',
           skillsOffered: [],
           skillsWanted: [],
-          profileType: 'public',
+          profileType: 'private', // Default to private
           createdAt: new Date(),
         });
+        toast.success('Account created successfully!');
         router.push('/dashboard');
       }
     } catch (err: any) {
-      setError(err.message);
-      console.error(err);
+      let errorMessage = err.message;
+      
+      if (isLogin) {
+        if (err.code === 'auth/user-not-found') {
+          toast.error('Account not found', {
+            position: "top-center",
+            autoClose: 3000,
+            hideProgressBar: true,
+          });
+        } else if (err.code === 'auth/wrong-password') {
+          toast.warn('INVALID PASSWORD, RETRY', {
+            position: "top-center",
+            autoClose: 3000,
+            hideProgressBar: true,
+          });
+        } else {
+          toast.error(errorMessage, {
+            position: "top-center",
+            autoClose: 3000,
+            hideProgressBar: true,
+          });
+        }
+      } else {
+        if (err.code === 'auth/email-already-in-use') {
+          toast.error('Email already in use', {
+            position: "top-center",
+            autoClose: 3000,
+            hideProgressBar: true,
+          });
+        } else {
+          toast.error(errorMessage, {
+            position: "top-center",
+            autoClose: 3000,
+            hideProgressBar: true,
+          });
+        }
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const handlePasswordReset = async () => {
     if (!email) {
-      setError('Please enter your email first');
+      toast.error('Please enter your email first', {
+        position: "top-center",
+        autoClose: 3000,
+        hideProgressBar: true,
+      });
       return;
     }
 
     try {
       await sendPasswordResetEmail(auth, email);
       setResetEmailSent(true);
-      setError('');
+      toast.success('Password reset email sent! Check your inbox.', {
+        position: "top-center",
+        autoClose: 3000,
+        hideProgressBar: true,
+      });
     } catch (err: any) {
-      setError(err.message);
+      if (err.code === 'auth/user-not-found') {
+        toast.error('Account not found', {
+          position: "top-center",
+          autoClose: 3000,
+          hideProgressBar: true,
+        });
+      } else {
+        toast.error(err.message, {
+          position: "top-center",
+          autoClose: 3000,
+          hideProgressBar: true,
+        });
+      }
     }
   };
 
   if (forgotPassword) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-100 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+        <ToastContainer />
         <div className="sm:mx-auto sm:w-full sm:max-w-md">
           <h2 className="mt-6 text-center text-3xl font-bold text-gray-800">
             Reset Password
@@ -115,14 +176,15 @@ export default function AuthPage() {
                     </div>
                   </div>
 
-                  {error && <p className="text-red-500 text-sm">{error}</p>}
-
                   <div>
                     <button
                       type="submit"
-                      className="w-full flex justify-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium text-white bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                      disabled={isSubmitting}
+                      className={`w-full flex justify-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium text-white bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 ${
+                        isSubmitting ? 'opacity-50 cursor-not-allowed' : ''
+                      }`}
                     >
-                      Send Reset Link
+                      {isSubmitting ? 'Sending...' : 'Send Reset Link'}
                     </button>
                   </div>
                 </form>
@@ -145,6 +207,7 @@ export default function AuthPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-100 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+      <ToastContainer />
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
         <h2 className="mt-6 text-center text-3xl font-bold text-gray-800">
           {isLogin ? 'Welcome Back' : 'Create Account'}
@@ -208,6 +271,7 @@ export default function AuthPage() {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  suppressHydrationWarning
                   className="appearance-none block w-full px-4 py-3 border border-gray-300 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-800"
                 />
               </div>
@@ -225,27 +289,15 @@ export default function AuthPage() {
               </div>
             )}
 
-            {error && (
-              <div className="rounded-md bg-red-50 p-4">
-                <div className="flex">
-                  <div className="flex-shrink-0">
-                    <svg className="h-5 w-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                    </svg>
-                  </div>
-                  <div className="ml-3">
-                    <h3 className="text-sm font-medium text-red-800">{error}</h3>
-                  </div>
-                </div>
-              </div>
-            )}
-
             <div>
               <button
                 type="submit"
-                className="w-full flex justify-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium text-white bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                disabled={isSubmitting}
+                className={`w-full flex justify-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium text-white bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 ${
+                  isSubmitting ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
               >
-                {isLogin ? 'Sign in' : 'Sign up'}
+                {isSubmitting ? 'Processing...' : isLogin ? 'Sign in' : 'Sign up'}
               </button>
             </div>
           </form>
@@ -264,7 +316,12 @@ export default function AuthPage() {
 
             <div className="mt-6 text-center">
               <button
-                onClick={() => setIsLogin(!isLogin)}
+                onClick={() => {
+                  setIsLogin(!isLogin);
+                  setEmail('');
+                  setPassword('');
+                  setName('');
+                }}
                 className="font-medium text-blue-600 hover:text-blue-500"
               >
                 {isLogin ? 'Need an account? Sign up' : 'Already have an account? Sign in'}
